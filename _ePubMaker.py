@@ -22,6 +22,7 @@ import sys
 import threading
 import traceback
 import uuid
+import piexif
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List
@@ -101,6 +102,7 @@ class EPubMaker(threading.Thread):
         self.max_width = max_width
         self.max_height = max_height
         self.wrap_pages = wrap_pages
+        self.orientation_lut = {3: 180, 6: 270, 8: 90,}
 
     def run(self):
         try:
@@ -187,6 +189,16 @@ class EPubMaker(threading.Thread):
             image["id"] = f"image_{count:0{padding_width}}"
             image["filename"] = image["id"] + image["extension"]
 
+    def pull_exif_orientation(self, image_data):
+        try:
+            exif_dict = piexif.load(image_data.info['exif'])
+            orientation = exif_dict['0th'][piexif.ImageIFD.Orientation]
+            if orientation in [3, 6, 8]:
+                return orientation
+        except (KeyError, AttributeError, IndexError):
+            pass
+        return 0
+
     def write_images(self):
         if self.progress:
             self.progress.progress_set_maximum(len(self.images))
@@ -199,13 +211,23 @@ class EPubMaker(threading.Thread):
             image_data: PIL.Image.Image = PIL.Image.open(image["source"])
             image["width"], image["height"] = image_data.size
             image["type"] = image_data.get_format_mimetype()
+            should_rotate = self.pull_exif_orientation(image_data)
             should_resize = (self.max_width and self.max_width < image["width"]) or (
                         self.max_height and self.max_height < image["height"])
             should_grayscale = self.grayscale and image_data.mode != "L"
-            if not should_grayscale and not should_resize:
+            if not should_grayscale and not should_resize and not should_rotate:
                 self.zip.write(image["source"], output)
             else:
                 image_format = image_data.format
+                if should_rotate:
+                    image_data = image_data.rotate(self.orientation_lut[should_rotate], expand=True)
+                    # if should_rotate == 3:
+                    #     image_data = image_data.rotate(180, expand=True)
+                    # elif should_rotate == 6:
+                    #     image_data = image_data.rotate(270, expand=True)
+                    # elif should_rotate == 8:
+                    #     image_data = image_data.rotate(90, expand=True)
+                    image["width"], image["height"] = image_data.size
                 if should_resize:
                     width_scale = image["width"] / self.max_width if self.max_width else 1.0
                     height_scale = image["height"] / self.max_height if self.max_height else 1.0
